@@ -340,6 +340,14 @@
     </div>
 
     <div class="field">
+      <label>Tempo do procedimento <span class="req">*</span> <span class="hint">ocupação da sala, em minutos</span></label>
+      <div class="prefix-wrap">
+        <input type="number" id="tempoProcedimento" min="0" step="5" placeholder="Ex: 30" style="padding-left:12px; padding-right:40px;">
+        <span class="prefix" style="left:auto; right:12px;">min</span>
+      </div>
+    </div>
+
+    <div class="field">
       <label>Alíquota de imposto <span class="req">*</span></label>
       <div class="prefix-wrap">
         <input type="number" id="aliquotaImposto" min="0" step="0.01" placeholder="Ex: 12" style="padding-left:12px; padding-right:28px;">
@@ -489,12 +497,7 @@
 <div class="modal-overlay" id="configOverlay">
   <div class="modal">
     <h2>Configurações</h2>
-    <p class="small-note">Ajuste aqui as despesas operacionais e os limites da régua de margem. As alterações ficam salvas neste navegador.</p>
-
-    <div class="config-block">
-      <h3>Despesas operacionais fixas (%)</h3>
-      <input type="number" id="cfgDespesasOperacionais" min="0" step="0.1" style="width:120px;">
-    </div>
+    <p class="small-note">Ajuste aqui os limites da régua de margem. As alterações ficam salvas neste navegador. O custo da sala vem da aba <b>Hora Sala</b>, proporcional ao tempo de cada procedimento.</p>
 
     <div class="config-block">
       <h3>Limites da régua de margem (%)</h3>
@@ -525,16 +528,19 @@
    premiação de equipe são sempre campos livres, digitados pelo consultor —
    sem lista fixa. Insumos funcionam como uma ficha técnica: o consultor
    adiciona quantos itens quiser e o total é somado automaticamente.
-   "Hora sala" não é mais informada aqui: ela compõe as despesas
-   operacionais fixas, calculadas na aba "Hora Sala".
+   O custo da sala nao e digitado aqui: e o valor da hora sala calculado na
+   aba "Hora Sala", multiplicado pelo tempo de ocupacao do procedimento.
    ========================================================================== */
 const DEFAULT_CONFIG = {
-  despesasOperacionais: 20,
   limiteVerde: 20,
   limiteAmarelo: 10
 };
 
-const CONFIG_KEY = "ilikia_precificacao_config_v2";
+const CONFIG_KEY = "ilikia_precificacao_config_v3";
+
+// Dados da clinica ficam salvos: mudam pouco e sao necessarios para
+// calcular o custo da sala de qualquer procedimento.
+const CLINICA_KEY = "ilikia_hora_sala_v1";
 
 function loadConfig(){
   try{
@@ -552,6 +558,10 @@ function saveConfigToStorage(cfg){
 
 let CONFIG = loadConfig();
 let cartaoMode = "sem"; // sem | com
+
+// Valor da hora sala calculado na aba "Hora Sala". null = clinica ainda nao
+// preenchida, e nesse caso o custo da sala nao pode ser apurado.
+let valorHoraSala = null;
 
 const brl = (n) => (isFinite(n) ? n : 0).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
 const pct = (n) => (isFinite(n) ? n : 0).toLocaleString('pt-BR', { minimumFractionDigits:1, maximumFractionDigits:1 }) + '%';
@@ -616,7 +626,7 @@ function setCartaoMode(mode){
   calculate();
 }
 
-const requiredIds = ['valorVenda','aliquotaImposto','taxaCartao','premiacaoEquipe','maoDeObra'];
+const requiredIds = ['valorVenda','tempoProcedimento','aliquotaImposto','taxaCartao','premiacaoEquipe','maoDeObra'];
 requiredIds.forEach(id => {
   document.getElementById(id).addEventListener('input', calculate);
   document.getElementById(id).addEventListener('change', calculate);
@@ -629,6 +639,7 @@ function getNum(id){
 
 function calculate(){
   const valorVenda = getNum('valorVenda');
+  const tempoMin = getNum('tempoProcedimento');
   const maoDeObraPct = getNum('maoDeObra');
   const impostoPct = getNum('aliquotaImposto');
   const cartaoPct = getNum('taxaCartao');
@@ -639,6 +650,7 @@ function calculate(){
 
   const fields = [
     ['valorVenda', valorVenda !== null && valorVenda > 0],
+    ['tempoProcedimento', tempoMin !== null && tempoMin > 0],
     ['aliquotaImposto', impostoPct !== null && impostoPct >= 0],
     ['taxaCartao', cartaoPct !== null && cartaoPct >= 0],
     ['premiacaoEquipe', premiacaoPct !== null && premiacaoPct >= 0],
@@ -674,13 +686,9 @@ function calculate(){
   const margemContribuicao = valorVenda - custosDiretos;
   const margemContribuicaoPct = (margemContribuicao / valorVenda) * 100;
 
-  const despesasOperacionaisValor = valorVenda * (CONFIG.despesasOperacionais/100);
-  const resultadoFinal = margemContribuicao - despesasOperacionaisValor;
-  const resultadoFinalPct = (resultadoFinal / valorVenda) * 100;
-
   const cartaoLabel = cartaoMode === 'sem' ? 'sem antecipação' : 'com antecipação';
 
-  breakdownEl.innerHTML = `
+  const linhasAcimaDaMargem = `
     <li><span>Valor de venda</span><span>${brl(valorVenda)}</span></li>
     <li><span>(-) Impostos (${pct(impostoPct)})</span><span class="neg">-${brl(impostoValor)}</span></li>
     <li><span>(-) Taxa de cartão (${pct(cartaoPct)}, ${cartaoLabel})</span><span class="neg">-${brl(cartaoValor)}</span></li>
@@ -688,7 +696,27 @@ function calculate(){
     <li><span>(-) Honorário médico (${pct(maoDeObraPct)})</span><span class="neg">-${brl(maoDeObraValor)}</span></li>
     <li><span>(-) Premiação de equipe (${pct(premiacaoPct)})</span><span class="neg">-${brl(premiacaoValor)}</span></li>
     <li class="total"><span>Margem de contribuição</span><span>${brl(margemContribuicao)} (${pct(margemContribuicaoPct)})</span></li>
-    <li><span>(-) Despesas operacionais (${pct(CONFIG.despesasOperacionais)})</span><span class="neg">-${brl(despesasOperacionaisValor)}</span></li>
+  `;
+
+  // Sem os dados da clinica nao ha como apurar o custo da sala. Mostrar um
+  // resultado sem ele daria uma margem inflada e induziria a erro de preco,
+  // entao o veredito fica retido ate a aba "Hora Sala" ser preenchida.
+  if (valorHoraSala === null){
+    breakdownEl.innerHTML = linhasAcimaDaMargem + `
+      <li><span>(-) Custo da sala</span><span class="muted-line">a apurar</span></li>
+    `;
+    banner.className = 'result-banner empty';
+    resultValue.textContent = '—';
+    resultMsg.innerHTML = 'Preencha a aba <b>Hora Sala</b> para incluir o custo da sala e fechar o resultado';
+    return;
+  }
+
+  const custoSala = valorHoraSala * (tempoMin / 60);
+  const resultadoFinal = margemContribuicao - custoSala;
+  const resultadoFinalPct = (resultadoFinal / valorVenda) * 100;
+
+  breakdownEl.innerHTML = linhasAcimaDaMargem + `
+    <li><span>(-) Custo da sala (${tempoMin} min × ${brl(valorHoraSala)}/h)</span><span class="neg">-${brl(custoSala)}</span></li>
     <li class="total"><span>Resultado final</span><span>${brl(resultadoFinal)}</span></li>
   `;
 
@@ -765,6 +793,8 @@ function calcHoraSala(){
   const diasSemana = getNum('hsDiasSemana');
   const semanasMes = getNum('hsSemanasMes');
 
+  salvarDadosClinica();   // guarda o estado atual, valido ou nao
+
   const salaVals = hsSalaValores.map(v => v === '' ? null : parseFloat(v));
   const salasOk = numSalas > 0 && salaVals.length === numSalas && salaVals.every(v => v !== null && !isNaN(v) && v >= 0);
 
@@ -801,6 +831,8 @@ function calcHoraSala(){
     resultValue.textContent = '—';
     resultMsg.textContent = 'Aguardando dados';
     document.getElementById('hsMediaSalas').textContent = '—';
+    valorHoraSala = null;
+    calculate();
     return;
   }
 
@@ -816,7 +848,7 @@ function calcHoraSala(){
   const horasOciosasMes = Math.max(0, capacidadeMensalHoras - horasUtilizadasMes);
   const custoOciosidade = horasOciosasMes * custoPorHoraCapacidade;
 
-  const valorHoraSala = horasUtilizadasMes > 0 ? (despesas / horasUtilizadasMes) : NaN;
+  const valorHora = horasUtilizadasMes > 0 ? (despesas / horasUtilizadasMes) : NaN;
 
   breakdownEl.innerHTML = `
     <li><span>Capacidade mensal de horas</span><span>${capacidadeMensalHoras.toLocaleString('pt-BR')} h</span></li>
@@ -830,16 +862,51 @@ function calcHoraSala(){
   document.getElementById('hsCustoOciosidade').textContent = brl(custoOciosidade) + '/mês';
   statGrid.style.display = 'grid';
 
-  if (isNaN(valorHoraSala)){
+  if (isNaN(valorHora)){
     banner.className = 'result-banner bad';
     resultValue.textContent = '—';
     resultMsg.textContent = 'Sem horas utilizadas informadas — não é possível calcular o valor da hora';
+    valorHoraSala = null;
+    calculate();
     return;
   }
 
   banner.className = 'result-banner ok';
-  resultValue.textContent = brl(valorHoraSala);
+  resultValue.textContent = brl(valorHora);
   resultMsg.textContent = `Por hora efetivamente utilizada · ${pct(utilizacaoPct)} de utilização da capacidade`;
+
+  // Publica o valor para a aba de precificacao.
+  valorHoraSala = valorHora;
+  calculate();
+}
+
+/* ---------------- PERSISTENCIA DOS DADOS DA CLINICA ---------------- */
+function salvarDadosClinica(){
+  try{
+    localStorage.setItem(CLINICA_KEY, JSON.stringify({
+      despesas: document.getElementById('hsDespesasOperacionais').value,
+      numSalas: document.getElementById('hsNumSalas').value,
+      horasDia: document.getElementById('hsHorasDia').value,
+      diasSemana: document.getElementById('hsDiasSemana').value,
+      semanasMes: document.getElementById('hsSemanasMes').value,
+      salas: hsSalaValores
+    }));
+  }catch(e){ /* localStorage indisponivel: segue sem persistir */ }
+}
+
+function carregarDadosClinica(){
+  try{
+    const raw = localStorage.getItem(CLINICA_KEY);
+    if(!raw) return false;
+    const d = JSON.parse(raw);
+    document.getElementById('hsDespesasOperacionais').value = d.despesas || '';
+    document.getElementById('hsNumSalas').value = d.numSalas || '';
+    if(d.horasDia) document.getElementById('hsHorasDia').value = d.horasDia;
+    if(d.diasSemana) document.getElementById('hsDiasSemana').value = d.diasSemana;
+    if(d.semanasMes) document.getElementById('hsSemanasMes').value = d.semanasMes;
+    hsSalaValores = Array.isArray(d.salas) ? d.salas : [];
+    return true;
+  }catch(e){ return false; }
 }
 
 /* ---------------- CONFIG MODAL ---------------- */
@@ -849,13 +916,11 @@ document.getElementById('closeConfig').addEventListener('click', () => overlay.c
 overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.classList.remove('open'); });
 
 function openConfigModal(){
-  document.getElementById('cfgDespesasOperacionais').value = CONFIG.despesasOperacionais;
   document.getElementById('cfgLimiteVerde').value = CONFIG.limiteVerde;
   document.getElementById('cfgLimiteAmarelo').value = CONFIG.limiteAmarelo;
 }
 
 document.getElementById('saveConfig').addEventListener('click', () => {
-  CONFIG.despesasOperacionais = parseFloat(document.getElementById('cfgDespesasOperacionais').value) || 0;
   CONFIG.limiteVerde = parseFloat(document.getElementById('cfgLimiteVerde').value) || 0;
   CONFIG.limiteAmarelo = parseFloat(document.getElementById('cfgLimiteAmarelo').value) || 0;
   saveConfigToStorage(CONFIG);
@@ -874,8 +939,8 @@ document.getElementById('resetConfig').addEventListener('click', () => {
 
 /* ---------------- INIT ---------------- */
 addInsumoItem();
-calculate();
-calcHoraSala();
+carregarDadosClinica();   // restaura a clinica antes de montar as linhas de sala
+renderSalaRows();         // ja dispara calcHoraSala(), que por sua vez chama calculate()
 </script>
 </body>
 </html>
