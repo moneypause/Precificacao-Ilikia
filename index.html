@@ -256,6 +256,16 @@
   .result-banner.bad{background:var(--bad-bg); color:var(--bad-fg); border-color:var(--bad-border);}
   .result-banner.empty{background:var(--ilikia-sand); color:var(--text-muted); border-style:dashed;}
 
+  /* recado do preço sugerido: herda as cores do semáforo da margem */
+  [class^="sug-"]{
+    font-size:13.5px; line-height:1.55; margin:11px 0 0;
+    padding:11px 13px; border-radius:8px; border:1px solid var(--border);
+  }
+  .sug-neutro{background:var(--ilikia-sand); color:var(--text-muted);}
+  .sug-ok{background:var(--ok-bg); color:var(--ok-fg); border-color:var(--ok-border);}
+  .sug-warn{background:var(--warn-bg); color:var(--warn-fg); border-color:var(--warn-border);}
+  .sug-bad{background:var(--bad-bg); color:var(--bad-fg); border-color:var(--bad-border);}
+
   .legend{display:flex; gap:14px; margin-top:14px; font-size:11.5px; color:var(--text-muted); flex-wrap:wrap;}
   .legend .dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px;}
   .dot.ok{background:var(--ok-fg);} .dot.warn{background:var(--warn-fg);} .dot.bad{background:var(--bad-fg);}
@@ -414,6 +424,21 @@
         <span><span class="dot bad"></span>Abaixo de 10%</span>
       </div>
     </div>
+
+    <!-- Caminho inverso: em vez do preço dizer a margem, a margem diz o preço.
+         Não depende do valor de venda — é justamente o que se quer descobrir. -->
+    <div class="card" style="margin-top:20px;">
+      <h1 class="section-title">Preço sugerido</h1>
+      <div class="field" style="margin-bottom:0;">
+        <label for="margemAlvo">Margem que você quer ter <span class="hint">sobre o valor de venda</span></label>
+        <div class="prefix-wrap">
+          <input type="number" id="margemAlvo" min="0" max="99" step="0.5" placeholder="Ex: 20"
+                 style="padding-left:12px; padding-right:28px;">
+          <span class="prefix" style="left:auto; right:12px;">%</span>
+        </div>
+        <p id="sugestaoTexto" class="sug-neutro">Informe a margem que você quer ter.</p>
+      </div>
+    </div>
   </section>
 </div>
 
@@ -563,6 +588,17 @@ let cartaoMode = "sem"; // sem | com
 // preenchida, e nesse caso o custo da sala nao pode ser apurado.
 let valorHoraSala = null;
 
+/**
+ * Em que faixa do semaforo uma margem cai. Regra unica: o resultado do preco
+ * digitado e a cor do preco sugerido saem daqui, entao os dois nunca discordam.
+ * "Acima de 20%" e estrito, como diz a legenda: 20,0% cravado e amarelo.
+ */
+function faixaDaMargem(m){
+  if (m > CONFIG.limiteVerde) return 'ok';
+  if (m >= CONFIG.limiteAmarelo) return 'warn';
+  return 'bad';
+}
+
 const brl = (n) => (isFinite(n) ? n : 0).toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
 const pct = (n) => (isFinite(n) ? n : 0).toLocaleString('pt-BR', { minimumFractionDigits:1, maximumFractionDigits:1 }) + '%';
 
@@ -637,6 +673,48 @@ function getNum(id){
   return isNaN(v) ? null : v;
 }
 
+/**
+ * A conta do procedimento para um preco qualquer.
+ *
+ * Fica separada da tela de proposito: a mesma funcao serve para mostrar o
+ * resultado do preco digitado e para descobrir o preco que entrega a margem
+ * desejada. Assim a regra de custo existe em um lugar so, e as duas contas
+ * nao tem como divergir.
+ *
+ * Devolve null se faltar algum dado — resultado nunca sai com campo vazio
+ * tratado como zero.
+ */
+function apurar(preco){
+  const tempoMin = getNum('tempoProcedimento');
+  const impostoPct = getNum('aliquotaImposto');
+  const cartaoPct = getNum('taxaCartao');
+  const premiacaoPct = getNum('premiacaoEquipe');
+  const maoDeObraPct = getNum('maoDeObra');
+
+  const faltando = [tempoMin, impostoPct, cartaoPct, premiacaoPct, maoDeObraPct]
+    .some(v => v === null || v < 0);
+  if (faltando || valorHoraSala === null || !(preco > 0)) return null;
+
+  const imposto = preco * (impostoPct / 100);
+  const cartao = preco * (cartaoPct / 100);
+  const premiacao = preco * (premiacaoPct / 100);
+  const maoDeObra = preco * (maoDeObraPct / 100);
+  const insumos = getInsumoTotal();
+  const custoSala = valorHoraSala * (tempoMin / 60);
+
+  const margemContribuicao = preco - imposto - cartao - insumos - maoDeObra - premiacao;
+  const resultadoFinal = margemContribuicao - custoSala;
+
+  return {
+    preco, tempoMin, impostoPct, cartaoPct, premiacaoPct, maoDeObraPct,
+    imposto, cartao, premiacao, maoDeObra, insumos, custoSala,
+    margemContribuicao,
+    margemContribuicaoPct: (margemContribuicao / preco) * 100,
+    resultadoFinal,
+    resultadoFinalPct: (resultadoFinal / preco) * 100,
+  };
+}
+
 function calculate(){
   const valorVenda = getNum('valorVenda');
   const tempoMin = getNum('tempoProcedimento');
@@ -647,6 +725,7 @@ function calculate(){
 
   const insumoValor = getInsumoTotal();
   document.getElementById('insumoTotal').textContent = brl(insumoValor);
+  sugerirPreco();
 
   const fields = [
     ['valorVenda', valorVenda !== null && valorVenda > 0],
@@ -722,17 +801,103 @@ function calculate(){
 
   resultValue.textContent = `${pct(resultadoFinalPct)}`;
 
-  let cls, msg;
-  if (resultadoFinalPct > CONFIG.limiteVerde){
-    cls = 'ok'; msg = 'Margem saudável — acima da meta de ' + CONFIG.limiteVerde + '%';
-  } else if (resultadoFinalPct >= CONFIG.limiteAmarelo){
-    cls = 'warn'; msg = 'Margem de atenção — entre ' + CONFIG.limiteAmarelo + '% e ' + CONFIG.limiteVerde + '%';
-  } else {
-    cls = 'bad'; msg = 'Margem crítica — abaixo de ' + CONFIG.limiteAmarelo + '%';
-  }
+  const cls = faixaDaMargem(resultadoFinalPct);
+  const msg = cls === 'ok'
+    ? 'Margem saudável — acima da meta de ' + CONFIG.limiteVerde + '%'
+    : cls === 'warn'
+      ? 'Margem de atenção — entre ' + CONFIG.limiteAmarelo + '% e ' + CONFIG.limiteVerde + '%'
+      : 'Margem crítica — abaixo de ' + CONFIG.limiteAmarelo + '%';
   banner.className = 'result-banner ' + cls;
   resultMsg.textContent = msg + ` · Resultado: ${brl(resultadoFinal)}`;
 }
+
+/* ---------------- PRECO SUGERIDO PELA MARGEM ---------------- */
+
+/*
+ * Limiares que separam zero de verdade do ruido de ponto flutuante: os
+ * coeficientes saem de subtracoes, entao um custo fixo nulo chega aqui como
+ * 1e-14 em vez de 0.
+ */
+const CUSTO_FIXO_MINIMO = 0.005;   // meio centavo
+const FOLGA_MINIMA = 1e-9;
+
+/**
+ * O caminho inverso: dada a margem que se quer ter, por quanto vender.
+ *
+ * O lucro e uma reta no preco — os custos percentuais (imposto, cartao,
+ * premiacao, honorario) acompanham o que se cobra, e os fixos (insumos e sala)
+ * nao se mexem:
+ *
+ *     lucro  = preco * a - f        a = 1 - soma dos percentuais
+ *     margem = a - f / preco        f = soma dos custos fixos
+ *
+ * Igualando a margem ao alvo m:  preco = f / (a - m).
+ *
+ * Os coeficientes saem de duas passagens pela propria `apurar`, entao qualquer
+ * custo novo que ela aprenda entra aqui sozinho.
+ *
+ * Nao depende do valor de venda: e justamente o numero que se quer descobrir.
+ */
+function precoParaMargem(alvo){
+  if (alvo === null || alvo < 0) return { erro: 'margem' };
+  if (valorHoraSala === null) return { erro: 'sala' };
+
+  const a1 = apurar(100);
+  const a2 = apurar(200);
+  if (!a1 || !a2) return { erro: 'custos' };
+
+  const a = (a2.resultadoFinal - a1.resultadoFinal) / 100;
+  const f = a * 100 - a1.resultadoFinal;
+  const m = alvo / 100;
+
+  // Os percentuais mais a margem pedida passariam de 100% da venda: subir o
+  // preco nao adianta, porque cada real a mais ja vem com o custo junto.
+  if (a - m < FOLGA_MINIMA) return { erro: 'percentuais' };
+  // Sem custo fixo a margem nao depende do preco — nao ha o que ajustar.
+  if (f < CUSTO_FIXO_MINIMO) return { erro: 'sem_custo_fixo' };
+
+  const exato = f / (a - m);
+  if (!isFinite(exato) || exato <= 0) return { erro: 'percentuais' };
+
+  // Arredonda para CIMA no centavo: o preco mostrado e o que a pessoa vai
+  // cobrar, e cobrando menos que o exato a margem ficaria um fio abaixo da
+  // pedida — num limite de faixa isso vira amarelo virando vermelho.
+  return { preco: Math.ceil(exato * 100) / 100 };
+}
+
+const RECADOS = {
+  margem: 'Informe a margem que você quer ter.',
+  sala: 'Preencha a aba <b>Hora Sala</b> para incluir o custo da sala.',
+  custos: 'Preencha os custos do procedimento para ver a sugestão.',
+  percentuais: 'Não existe preço que entregue essa margem: impostos, cartão, premiação e '
+             + 'honorário já consomem essa fatia da venda.',
+  sem_custo_fixo: 'Sem custo fixo (sala e insumos), a margem é a mesma em qualquer preço.',
+};
+
+function sugerirPreco(){
+  const linha = document.getElementById('sugestaoTexto');
+  if (!linha) return;
+
+  const alvo = getNum('margemAlvo');
+  const { preco, erro } = precoParaMargem(alvo);
+
+  if (erro) {
+    linha.innerHTML = RECADOS[erro];
+    linha.className = erro === 'percentuais' || erro === 'sem_custo_fixo' ? 'sug-bad' : 'sug-neutro';
+    return;
+  }
+
+  const atual = getNum('valorVenda');
+  const diferenca = (atual !== null && atual > 0) ? preco - atual : null;
+  const comparacao = (diferenca !== null && Math.abs(diferenca) >= 0.01)
+    ? ` — ${brl(Math.abs(diferenca))} ${diferenca > 0 ? 'acima' : 'abaixo'} do valor de venda atual`
+    : '';
+
+  linha.innerHTML = `Para uma margem de <b>${pct(alvo)}</b>, venda por <b>${brl(preco)}</b>${comparacao}.`;
+  linha.className = 'sug-' + faixaDaMargem(alvo);
+}
+
+document.getElementById('margemAlvo').addEventListener('input', sugerirPreco);
 
 /* ---------------- TABS ---------------- */
 document.getElementById('tabBtnPrecificacao').addEventListener('click', () => switchTab('precificacao'));
